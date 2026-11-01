@@ -1,0 +1,16 @@
+# Non-secret, per-environment config — the ConfigMap half of what
+# envFrom in deployment.yaml / argo-rollout.yaml injects. Values here
+# mirror environments/*.env.example; this file is the dev copy. staging
+# and prod get their own ConfigMap with the matching OTEL endpoint and
+# sample-rate values from environments/staging.env.example and
+# environments/prod.env.example respectively.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sakh-config
+data:
+  SAKH_ENVIRONMENT: "dev"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.sakh-dev.svc.cluster.local:4317"
+  SAKH_EVAL_SAMPLE_RATE: "0.5"
+  SAKH_DRIFT_BASELINE_SIZE: "8"
+  SAKH_DRIFT_WINDOW: "15"

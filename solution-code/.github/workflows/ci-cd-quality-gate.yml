@@ -1,0 +1,124 @@
+# CI/CD pipeline — tests, then a quality-gated promotion through
+# dev -> staging -> prod. The `quality-gate` job is the one that reads
+# src/release/quality_gate.py's decision; nothing is promoted past it
+# automatically. Secrets referenced below (OPENAI_API_KEY,
+# LLOYDS_RETAIL_OPENAI_KEY, LLOYDS_BIZ_OPENAI_KEY) are configured as
+# GitHub Environment secrets per environment, never committed — see
+# environments/*.env.example for the non-secret config each environment
+# layers on top, and k8s/secrets/secret-example.yaml for how they reach
+# the running pods.
+
+name: ci-cd-quality-gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Deployment-integrity check (dev)
+        run: python -c "from src.release.model_registry import verify_deployment_integrity as v; import json,sys; f=v('dev'); print(json.dumps(f, indent=2)); sys.exit(1 if any(not x['matches_pin'] for x in f) else 0)"
+      - name: Unit tests
+        run: pytest tests/unit/ -v
+
+  shadow-eval-batch:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run a batch of shadow comparisons (stable vs. candidate canary prompt)
+        run: python scripts/run_shadow_batch.py --environment dev --n 20
+
+  quality-gate:
+    needs: shadow-eval-batch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Evaluate quality gate (promote / hold / rollback)
+        run: |
+          python -c "
+          from src.release.quality_gate import evaluate_quality_gate
+          import sys
+          d = evaluate_quality_gate()
+          print(f'decision={d.decision} reason={d.reason}')
+          sys.exit(0 if d.decision == 'promote' else 1)
+          "
+
+  promote-dev-to-staging:
+    needs: quality-gate
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Gate promotion dev -> staging
+        run: |
+          python -c "
+          from src.release.promotion import promote
+          import sys
+          r = promote('dev', 'staging', variant='canary')
+          print(r)
+          sys.exit(0 if r.allowed else 1)
+          "
+      - name: Apply canary Rollout to staging (kubectl + Argo Rollouts plugin)
+        run: |
+          echo "kubectl config use-context staging"
+          echo "kubectl apply -f k8s/base/ -n sakh-staging"
+          echo "kubectl argo rollouts set image sakh-rollout sakh=ghcr.io/lloyds-training/sakh:${{ github.sha }} -n sakh-staging"
+        # Commands above are illustrative for this lab environment — no
+        # live cluster credentials are configured here. In a real
+        # pipeline this step runs with a staging kubeconfig injected via
+        # GitHub Environment secrets.
+
+  promote-staging-to-prod:
+    needs: promote-dev-to-staging
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Gate promotion staging -> prod (requires manual approval via GitHub Environment protection rules)
+        run: |
+          python -c "
+          from src.release.promotion import promote
+          import sys
+          r = promote('staging', 'prod', variant='canary')
+          print(r)
+          sys.exit(0 if r.allowed else 1)
+          "
+      - name: Apply canary Rollout to prod
+        run: |
+          echo "kubectl config use-context prod"
+          echo "kubectl apply -f k8s/base/ -n sakh-prod"
+          echo "kubectl apply -f k8s/rollout/ -n sakh-prod"

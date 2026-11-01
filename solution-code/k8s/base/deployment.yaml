@@ -1,0 +1,49 @@
+# Base Deployment — in an environment WITHOUT Argo Rollouts installed,
+# this is what you'd apply directly. Where Argo Rollouts IS installed
+# (staging, prod — see k8s/rollout/), this Deployment is superseded by
+# the Rollout resource in argo-rollout.yaml, which manages the same pod
+# template through canary steps instead of a flat rolling update.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sakh-agent
+  labels:
+    app: sakh-agent
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: sakh-agent
+  template:
+    metadata:
+      labels:
+        app: sakh-agent
+    spec:
+      containers:
+        - name: sakh
+          image: ghcr.io/lloyds-training/sakh:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: sakh-config
+            - secretRef:
+                name: sakh-secrets
+          env:
+            - name: SAKH_ENVIRONMENT
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          readinessProbe:
+            httpGet:
+              path: /applicants
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

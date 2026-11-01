@@ -1,0 +1,62 @@
+# Argo Rollouts canary resource — replaces the plain Deployment in
+# staging/prod. Traffic shifts through the steps below; after the 20%
+# and 50% steps, an AnalysisRun (analysis-template.yaml) automatically
+# queries Prometheus for the CANARY variant's quality score vs. STABLE's
+# (the same decision quality_gate.py makes in Python, expressed here as
+# a PromQL query Argo Rollouts can evaluate on its own schedule).
+# A failed AnalysisRun aborts the rollout and shifts traffic back to
+# 100% stable automatically — this is the "automated rollback from a
+# quality regression rather than from an error rate" requirement.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: sakh-rollout
+  labels:
+    app: sakh-agent
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: sakh-agent
+  template:
+    metadata:
+      labels:
+        app: sakh-agent
+    spec:
+      containers:
+        - name: sakh
+          image: ghcr.io/lloyds-training/sakh:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: sakh-config
+            - secretRef:
+                name: sakh-secrets
+          readinessProbe:
+            httpGet:
+              path: /applicants
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+  strategy:
+    canary:
+      steps:
+        - setWeight: 20
+        - pause: { duration: 10m }
+        - analysis:
+            templates:
+              - templateName: sakh-quality-gate
+        - setWeight: 50
+        - pause: { duration: 15m }
+        - analysis:
+            templates:
+              - templateName: sakh-quality-gate
+        - setWeight: 100
+      trafficRouting:
+        # In this lab's cluster-less setup this section documents intent
+        # (how requests would be weighted between stable/canary Services)
+        # rather than being applied against a live mesh.
+        nginx:
+          stableService: sakh-agent-stable
+          canaryService: sakh-agent-canary

@@ -1,0 +1,49 @@
+version: "3.8"
+
+# Local dev stack — Jaeger + OTel Collector + Prometheus, mirroring what
+# runs in-cluster for staging/prod (k8s/base/, k8s/rollout/). Grafana is
+# included here so the Module 6-equivalent dashboards (cost, latency)
+# and the Module 8 quality-by-variant panel can be viewed locally without
+# a cluster. Argo Rollouts itself is NOT run locally — its
+# AnalysisTemplate queries are validated by reading k8s/rollout/ and by
+# scripts/run_shadow_batch.py exercising the same quality_gate.py logic
+# the AnalysisTemplate mirrors.
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    ports:
+      - "16686:16686"
+      - "4317"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.102.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"
+      - "8889:8889"
+    depends_on:
+      - jaeger
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      - otel-collector
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    depends_on:
+      - prometheus

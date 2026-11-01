@@ -1,0 +1,33 @@
+# AnalysisTemplate — the cluster-native equivalent of
+# src/release/quality_gate.py's evaluate_quality_gate(). Queries
+# Prometheus for the rolling average of the sakh_eval_score metric
+# (exported via the OTel Collector from src/observability/metrics.py),
+# broken out by the `variant` label, and fails the analysis run if the
+# canary's average is more than 0.5 points below stable's — deliberately
+# NOT keyed on error rate or latency, because a prompt/model regression
+# can serve 200 OK on every request and still be meaningfully worse.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: sakh-quality-gate
+spec:
+  metrics:
+    - name: canary-quality-regression
+      interval: 5m
+      count: 3
+      successCondition: result[0] <= 0.5
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring.svc.cluster.local:9090
+          query: |
+            avg(sakh_eval_score{variant="stable"}) - avg(sakh_eval_score{variant="canary"})
+    - name: canary-min-sample-size
+      interval: 5m
+      count: 1
+      successCondition: result[0] >= 5
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring.svc.cluster.local:9090
+          query: |
+            count(sakh_eval_score{variant="canary"})
