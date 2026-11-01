@@ -1,4 +1,3 @@
--- Active: 1770145315801@@itc-manufacturing-pg.postgres.database.azure.com@5432
 # Sakh — Credit Underwriting Agent with Module 8 Release Engineering
 
 A working, fully traced credit/loan underwriting assistant for Lloyds
